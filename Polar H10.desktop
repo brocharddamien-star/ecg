@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Polar H10
+Comment=Enregistreur ECG Polar H10
+Exec=/home/damien/Documents/ecg/app.sh
+Icon=applications-science
+Terminal=false
+Categories=Science;
