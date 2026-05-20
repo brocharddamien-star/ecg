@@ -18,6 +18,7 @@ try:
         QApplication, QMainWindow, QWidget,
         QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
         QDoubleSpinBox, QCheckBox, QFormLayout, QGroupBox,
+        QDialog, QScrollArea,
     )
     from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal, QThread
     from PyQt5.QtGui import QFont
@@ -307,6 +308,7 @@ def _make_rr_histogram(rr_ms):
 def generate_pdf(csv_path: str, pdf_path: str,
                  bpm_threshold: float = None,
                  window_s: float = 15.0,
+                 time_ranges=None,
                  progress_cb=None) -> str:
     """Génère le PDF à partir du CSV. Retourne le chemin du PDF ou lève une exception."""
 
@@ -341,16 +343,23 @@ def generate_pdf(csv_path: str, pdf_path: str,
     prog(f"{len(peaks)} pics R, FC moy={stats['mean_hr']} bpm")
 
     prog(f"Génération des figures ({window_s:.0f} s / tranche)…")
-    t_min = float(df_ecg["t_s"].iloc[0])
-    t_max = float(df_ecg["t_s"].iloc[-1])
-    figs, idx, ts = [], 1, t_min
-    while ts < t_max:
-        te  = min(ts + window_s, t_max)
-        buf = _make_slice_fig(df_ecg, ecg_f, peaks, stats,
-                              ts, te, idx, bpm_threshold)
-        figs.append((buf, idx))
-        ts += window_s; idx += 1
-    prog(f"{len(figs)} tranche(s) générée(s)")
+    t_data_min = float(df_ecg["t_s"].iloc[0])
+    t_data_max = float(df_ecg["t_s"].iloc[-1])
+    ranges = time_ranges if time_ranges else [(t_data_min, t_data_max)]
+    figs, idx = [], 1
+    for r_start, r_end in ranges:
+        r_start = max(float(r_start), t_data_min)
+        r_end   = min(float(r_end),   t_data_max)
+        ts = r_start
+        while ts < r_end:
+            te  = min(ts + window_s, r_end)
+            buf = _make_slice_fig(df_ecg, ecg_f, peaks, stats,
+                                  ts, te, idx, bpm_threshold)
+            figs.append((buf, idx))
+            ts += window_s; idx += 1
+    n_parts = len(ranges)
+    prog(f"{len(figs)} tranche(s) générée(s)"
+         + (f" sur {n_parts} partie(s)" if time_ranges else ""))
 
     rr_ms  = np.diff(peaks) / fs * 1000 if len(peaks) > 1 else np.array([])
     rr_buf = _make_rr_histogram(rr_ms)
@@ -436,7 +445,16 @@ def generate_pdf(csv_path: str, pdf_path: str,
     story.append(Spacer(1, 8))
 
     # Tracés ECG
-    story.append(Paragraph(f"Tracé ECG — tranches de {window_s:.0f} secondes", sec_sty))
+    if time_ranges:
+        parts_desc = "  ·  ".join(
+            f"{int(s//60):02d}:{int(s%60):02d}→{int(e//60):02d}:{int(e%60):02d}"
+            for s, e in time_ranges)
+        story.append(Paragraph(
+            f"Tracé ECG — {len(time_ranges)} partie(s) sélectionnée(s)"
+            f" — tranches de {window_s:.0f} s", sec_sty))
+        story.append(Paragraph(parts_desc, cap_sty))
+    else:
+        story.append(Paragraph(f"Tracé ECG — tranches de {window_s:.0f} secondes", sec_sty))
     cap = "De haut en bas : signal brut · signal filtré avec pics R · fréquence cardiaque"
     if bpm_threshold:
         cap += f"  |  <font color='#C0392B'><b>Seuil FC : {bpm_threshold:.0f} bpm</b></font>"
@@ -473,6 +491,333 @@ def generate_pdf(csv_path: str, pdf_path: str,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DIALOGUE : CHOIX PÉRIMÈTRE PDF
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PdfScopeDialog(QDialog):
+    """Demande si le PDF doit couvrir tout l'enregistrement ou des parties."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.choice = None
+        self.setWindowTitle("Export PDF")
+        self.setModal(True)
+        self.setFixedSize(400, 210)
+        self.setStyleSheet(f"background:{C_NAVY};")
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(28, 22, 28, 22)
+
+        lbl = QLabel("Que souhaitez-vous inclure dans le PDF ?")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            f"color:{C_WHITE}; font-size:13px; font-weight:700;")
+        lay.addWidget(lbl)
+
+        btn_full = QPushButton("Tout l'enregistrement")
+        btn_full.setMinimumHeight(44)
+        btn_full.setStyleSheet(
+            f"QPushButton {{ background:{C_PINK}; color:{C_WHITE}; "
+            f"border-radius:10px; font-size:13px; font-weight:700; }}"
+            f"QPushButton:hover {{ background:#d9269f; }}")
+        btn_full.clicked.connect(lambda: self._pick("full"))
+        lay.addWidget(btn_full)
+
+        btn_sel = QPushButton("Sélectionner une ou plusieurs parties")
+        btn_sel.setMinimumHeight(44)
+        btn_sel.setStyleSheet(
+            f"QPushButton {{ background:{C_PURPLE}; color:{C_WHITE}; "
+            f"border-radius:10px; font-size:12px; font-weight:600; "
+            f"border:2px solid {C_PINK}; }}"
+            f"QPushButton:hover {{ background:#5d2570; }}")
+        btn_sel.clicked.connect(lambda: self._pick("select"))
+        lay.addWidget(btn_sel)
+
+    def _pick(self, choice):
+        self.choice = choice
+        self.accept()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIALOGUE : SÉLECTEUR INTERACTIF DE PARTIES ECG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class EcgSelectorDialog(QDialog):
+    """Graphique ECG complet avec région déplaçable pour choisir les parties."""
+
+    def __init__(self, csv_path: str, parent=None):
+        super().__init__(parent)
+        self.csv_path     = csv_path
+        self._selected    = []   # list of (t_start, t_end)
+        self._region_item = None
+        self._added_vis   = []   # LinearRegionItems figées (vert)
+        self._total_s     = 0.0
+        self._blocking    = False
+        self._setup_ui()
+        self._load_and_plot()
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+
+    def _setup_ui(self):
+        self.setWindowTitle("Sélection ECG — parties à inclure dans le PDF")
+        self.setModal(True)
+        self.setMinimumSize(900, 620)
+        self.setStyleSheet(f"background:{C_NAVY};")
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(16, 12, 16, 12)
+
+        lbl_title = QLabel("Sélectionnez les parties à inclure dans le PDF")
+        lbl_title.setAlignment(Qt.AlignCenter)
+        lbl_title.setStyleSheet(
+            f"color:{C_WHITE}; font-size:14px; font-weight:700;")
+        root.addWidget(lbl_title)
+
+        lbl_hint = QLabel(
+            "Déplacez la région rose sur le graphe  ·  "
+            "affinez avec les champs ci-dessous  ·  cliquez « + Ajouter »")
+        lbl_hint.setAlignment(Qt.AlignCenter)
+        lbl_hint.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
+        root.addWidget(lbl_hint)
+
+        # Graphe ECG
+        self.plot = pg.PlotWidget(background=C_PURPLE)
+        self.plot.setMinimumHeight(280)
+        self.plot.setLabel("bottom", "Temps (s)")
+        self.plot.setLabel("left", "Amplitude (mV)")
+        self.plot.showGrid(x=True, y=True, alpha=0.25)
+        root.addWidget(self.plot)
+
+        # Contrôles de sélection
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(8)
+
+        def _spin(label_text):
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet(f"color:{C_WHITE}; font-size:11px;")
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 99999)
+            spin.setSuffix(" s")
+            spin.setDecimals(1)
+            spin.setMinimumWidth(96)
+            spin.setStyleSheet(
+                f"background:{C_PURPLE}; color:{C_WHITE}; "
+                f"border:1px solid {C_GRAY}; border-radius:4px; padding:2px;")
+            return lbl, spin
+
+        lbl_s, self.spin_start = _spin("Début :")
+        lbl_e, self.spin_end   = _spin("Fin :")
+        for w in (lbl_s, self.spin_start, lbl_e, self.spin_end):
+            ctrl.addWidget(w)
+
+        btn_add = QPushButton("+ Ajouter")
+        btn_add.setMinimumHeight(32)
+        btn_add.setStyleSheet(
+            f"QPushButton {{ background:{C_PINK}; color:{C_WHITE}; "
+            f"border-radius:6px; padding:4px 14px; "
+            f"font-weight:700; font-size:11px; }}"
+            f"QPushButton:hover {{ background:#d9269f; }}")
+        btn_add.clicked.connect(self._add_selection)
+        ctrl.addWidget(btn_add)
+        ctrl.addStretch()
+        root.addLayout(ctrl)
+
+        # Liste des sélections
+        sel_hdr = QLabel("Parties sélectionnées :")
+        sel_hdr.setStyleSheet(
+            f"color:{C_LPINK}; font-size:11px; font-weight:600;")
+        root.addWidget(sel_hdr)
+
+        self._sel_container = QWidget()
+        self._sel_container.setStyleSheet(f"background:{C_PURPLE};")
+        self._sel_lay = QVBoxLayout(self._sel_container)
+        self._sel_lay.setContentsMargins(8, 6, 8, 6)
+        self._sel_lay.setSpacing(4)
+
+        self._lbl_empty = QLabel(
+            "Aucune sélection — ajoutez au moins une partie")
+        self._lbl_empty.setAlignment(Qt.AlignCenter)
+        self._lbl_empty.setStyleSheet(
+            f"color:{C_GRAY}; font-size:10px; font-style:italic;")
+        self._sel_lay.addWidget(self._lbl_empty)
+        self._sel_lay.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidget(self._sel_container)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(115)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background:{C_PURPLE}; "
+            f"border:1px solid {C_GRAY}; border-radius:6px; }}")
+        root.addWidget(scroll)
+
+        # Boutons bas
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Annuler")
+        btn_cancel.setMinimumHeight(40)
+        btn_cancel.setStyleSheet(
+            f"background:{C_GRAY}; color:{C_WHITE}; border-radius:8px; "
+            f"padding:6px 20px; font-weight:700;")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        self.btn_generate = QPushButton("Générer le PDF")
+        self.btn_generate.setMinimumHeight(40)
+        self.btn_generate.setEnabled(False)
+        self.btn_generate.setStyleSheet(
+            f"QPushButton {{ background:{C_PINK}; color:{C_WHITE}; "
+            f"border-radius:8px; padding:6px 24px; font-weight:700; }}"
+            f"QPushButton:disabled {{ background:#2a3550; color:{C_GRAY}; }}")
+        self.btn_generate.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_generate)
+        root.addLayout(btn_row)
+
+    # ── Chargement et tracé ───────────────────────────────────────────────────
+
+    def _load_and_plot(self):
+        try:
+            df = pd.read_csv(self.csv_path)
+            t0 = df["time"].iloc[0]
+            df["t_s"] = (df["time"] - t0) / 1e9
+            df_ecg = df.dropna(subset=["ecg"]).reset_index(drop=True)
+            if df_ecg.empty:
+                return
+
+            t   = df_ecg["t_s"].values
+            raw = df_ecg["ecg"].values.astype(float)
+            self._total_s = float(t[-1])
+
+            step = max(1, len(t) // 8000)
+            self.plot.plot(t[::step], raw[::step],
+                           pen=pg.mkPen(C_PINK, width=1))
+            self.plot.setXRange(0, self._total_s, padding=0.02)
+
+            # Région initiale : 20 % de l'enregistrement centré
+            width = min(15.0, max(5.0, self._total_s * 0.2))
+            mid   = self._total_s / 2
+            r0, r1 = mid - width / 2, mid + width / 2
+
+            self._region_item = pg.LinearRegionItem(
+                values=[r0, r1],
+                brush=pg.mkBrush(198, 22, 141, 50),
+                pen=pg.mkPen(C_PINK, width=2),
+            )
+            self._region_item.setZValue(100)   # toujours au premier plan
+            self._region_item.sigRegionChanged.connect(self._on_region_drag)
+            self.plot.addItem(self._region_item)
+
+            self.spin_start.setMaximum(self._total_s)
+            self.spin_end.setMaximum(self._total_s)
+            self.spin_start.setValue(round(r0, 1))
+            self.spin_end.setValue(round(r1, 1))
+            self.spin_start.valueChanged.connect(self._on_spin_change)
+            self.spin_end.valueChanged.connect(self._on_spin_change)
+
+        except Exception as e:
+            logging.error(f"[selector] {e}")
+
+    # ── Synchronisation région ↔ spinboxes ────────────────────────────────────
+
+    def _on_region_drag(self):
+        if self._blocking:
+            return
+        r0, r1 = self._region_item.getRegion()
+        self._blocking = True
+        self.spin_start.setValue(round(r0, 1))
+        self.spin_end.setValue(round(r1, 1))
+        self._blocking = False
+
+    def _on_spin_change(self):
+        if self._blocking or self._region_item is None:
+            return
+        s, e = self.spin_start.value(), self.spin_end.value()
+        if e > s:
+            self._blocking = True
+            self._region_item.setRegion([s, e])
+            self._blocking = False
+
+    # ── Ajout / suppression de sélections ────────────────────────────────────
+
+    def _add_selection(self):
+        s = round(self.spin_start.value(), 1)
+        e = round(self.spin_end.value(), 1)
+        if e <= s:
+            return
+        rng = (s, e)
+        self._selected.append(rng)
+
+        vis = pg.LinearRegionItem(
+            values=[s, e], movable=False,
+            brush=pg.mkBrush(76, 175, 80, 45),
+            pen=pg.mkPen(C_GREEN, width=1.5),
+        )
+        vis.setZValue(1)   # derrière la région rose (Z=100)
+        self.plot.addItem(vis)
+        self._added_vis.append(vis)
+
+        if self._lbl_empty.isVisible():
+            self._lbl_empty.hide()
+
+        row = QFrame()
+        row.setStyleSheet(f"background:{C_NAVY}; border-radius:4px;")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(8, 2, 8, 2)
+
+        def fmt(v):
+            return f"{int(v // 60):02d}:{int(v % 60):02d}"
+
+        lbl = QLabel(
+            f"Partie {len(self._selected)} :  "
+            f"{fmt(s)} → {fmt(e)}  ({e - s:.0f} s)")
+        lbl.setStyleSheet(f"color:{C_WHITE}; font-size:10px;")
+        rl.addWidget(lbl)
+        rl.addStretch()
+
+        btn_del = QPushButton("✕")
+        btn_del.setFixedSize(22, 22)
+        btn_del.setStyleSheet(
+            f"background:{C_RED}; color:{C_WHITE}; border-radius:4px; "
+            f"font-size:9px; font-weight:700;")
+        btn_del.clicked.connect(
+            lambda _, v=vis, w=row, r=rng: self._remove_selection(v, w, r))
+        rl.addWidget(btn_del)
+
+        self._sel_lay.insertWidget(self._sel_lay.count() - 1, row)
+        self.btn_generate.setEnabled(True)
+
+        # Avance la région rose à la prochaine fenêtre suggérée
+        width   = max(e - s, 1.0)
+        next_s  = e
+        next_e  = min(e + width, self._total_s)
+        if next_e > next_s:
+            self._blocking = True
+            self._region_item.setRegion([next_s, next_e])
+            self.spin_start.setValue(round(next_s, 1))
+            self.spin_end.setValue(round(next_e, 1))
+            self._blocking = False
+
+    def _remove_selection(self, vis_item, row_widget, rng):
+        if rng in self._selected:
+            self._selected.remove(rng)
+        self.plot.removeItem(vis_item)
+        if vis_item in self._added_vis:
+            self._added_vis.remove(vis_item)
+        row_widget.deleteLater()
+        if not self._selected:
+            self._lbl_empty.show()
+            self.btn_generate.setEnabled(False)
+
+    def get_selected_ranges(self):
+        return list(self._selected)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # THREAD DE GÉNÉRATION PDF (pour ne pas bloquer l'UI)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -481,11 +826,13 @@ class PdfWorker(QThread):
     finished = pyqtSignal(str)   # chemin PDF
     error    = pyqtSignal(str)
 
-    def __init__(self, csv_path, bpm_threshold=None, window_s=15.0):
+    def __init__(self, csv_path, bpm_threshold=None, window_s=15.0,
+                 time_ranges=None):
         super().__init__()
         self.csv_path      = csv_path
         self.bpm_threshold = bpm_threshold
         self.window_s      = window_s
+        self.time_ranges   = time_ranges
 
     def run(self):
         try:
@@ -494,6 +841,7 @@ class PdfWorker(QThread):
                 self.csv_path, pdf_path,
                 bpm_threshold=self.bpm_threshold,
                 window_s=self.window_s,
+                time_ranges=self.time_ranges,
                 progress_cb=lambda m: self.progress.emit(m),
             )
             self.finished.emit(pdf_path)
@@ -1142,15 +1490,34 @@ class MainWindow(QMainWindow):
         if self.chk_pdf and not self.chk_pdf.isChecked():
             return
 
-        window_s   = self.spin_window.value() if self.spin_window else 15.0
-        bpm_thr    = (self.spin_seuil.value()
-                      if self.chk_seuil and self.chk_seuil.isChecked()
-                      else None)
+        # ── Demander : tout l'enregistrement ou parties sélectionnées ? ──────
+        scope_dlg = PdfScopeDialog(self)
+        if scope_dlg.exec_() != QDialog.Accepted:
+            self.lbl_pdf.setText("Export PDF annulé")
+            self.lbl_pdf.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
+            return
+
+        time_ranges = None
+        if scope_dlg.choice == "select":
+            sel_dlg = EcgSelectorDialog(csv_path, self)
+            if sel_dlg.exec_() != QDialog.Accepted:
+                self.lbl_pdf.setText("Export PDF annulé")
+                self.lbl_pdf.setStyleSheet(
+                    f"color:{C_LGRAY}; font-size:10px;")
+                return
+            time_ranges = sel_dlg.get_selected_ranges()
+            if not time_ranges:
+                return
+
+        window_s = self.spin_window.value() if self.spin_window else 15.0
+        bpm_thr  = (self.spin_seuil.value()
+                    if self.chk_seuil and self.chk_seuil.isChecked()
+                    else None)
 
         self.lbl_pdf.setText("⏳ Génération du PDF en cours…")
         self.lbl_pdf.setStyleSheet(f"color:{C_ORANGE}; font-size:10px;")
 
-        self._pdf_worker = PdfWorker(csv_path, bpm_thr, window_s)
+        self._pdf_worker = PdfWorker(csv_path, bpm_thr, window_s, time_ranges)
         self._pdf_worker.progress.connect(
             lambda m: self.lbl_pdf.setText(f"⏳ {m}"))
         self._pdf_worker.finished.connect(self._on_pdf_done)
