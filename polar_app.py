@@ -643,12 +643,20 @@ class EcgSelectorDialog(QDialog):
         lbl_hint.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
         root.addWidget(lbl_hint)
 
+        lbl_hint2 = QLabel("Molette : zoom  ·  Clic droit + glisser : déplacer la vue")
+        lbl_hint2.setAlignment(Qt.AlignCenter)
+        lbl_hint2.setStyleSheet(f"color:{C_LGRAY}; font-size:9px;")
+        root.addWidget(lbl_hint2)
+
         # Graphe ECG
         self.plot = pg.PlotWidget(background=C_PURPLE)
         self.plot.setMinimumHeight(220)
-        self.plot.setLabel("bottom", "Temps (s)")
+        self.plot.setLabel("bottom", "Temps (mm:ss)")
         self.plot.setLabel("left", "Amplitude (mV)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
+        self.plot.setMouseEnabled(x=True, y=True)
+        self.plot.getViewBox().setMouseMode(pg.ViewBox.RectMode)
+        self.plot.getViewBox().setMouseMode(pg.ViewBox.PanMode)
         root.addWidget(self.plot)
 
         # Graphe BPM
@@ -658,9 +666,10 @@ class EcgSelectorDialog(QDialog):
         self.bpm_plot = pg.PlotWidget(background=C_NAVY)
         self.bpm_plot.setMinimumHeight(110)
         self.bpm_plot.setMaximumHeight(140)
-        self.bpm_plot.setLabel("bottom", "Temps (s)")
+        self.bpm_plot.setLabel("bottom", "Temps (mm:ss)")
         self.bpm_plot.setLabel("left", "bpm")
         self.bpm_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.bpm_plot.setMouseEnabled(x=True, y=True)
         root.addWidget(self.bpm_plot)
 
         # Contrôles de sélection
@@ -767,6 +776,12 @@ class EcgSelectorDialog(QDialog):
             self.plot.plot(t[::step], raw[::step],
                            pen=pg.mkPen(C_PINK, width=1))
             self.plot.setXRange(0, self._total_s, padding=0.02)
+
+            def _mmss_tick(values, scale, spacing):
+                return [f"{int(v)//60:02d}:{int(v)%60:02d}" for v in values]
+
+            self.plot.getAxis("bottom").tickStrings = _mmss_tick
+            self.bpm_plot.getAxis("bottom").tickStrings = _mmss_tick
 
             # Région initiale : 20 % de l'enregistrement centré
             width = min(15.0, max(5.0, self._total_s * 0.2))
