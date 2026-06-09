@@ -181,6 +181,13 @@ def _adaptive_x_spacing(duration_s):
     return 10.0, 50.0
 
 
+def _fmt_mmss(x, _=None):
+    s = int(x)
+    return f"{s//60:02d}:{s%60:02d}"
+
+_mmss_formatter = plt.FuncFormatter(_fmt_mmss)
+
+
 def _ecg_grid(ax, t, signal, peaks=None, title=""):
     ax.set_facecolor("#FFFAFA")
     duration  = float(t[-1] - t[0]) if len(t) > 1 else 1.0
@@ -199,9 +206,9 @@ def _ecg_grid(ax, t, signal, peaks=None, title=""):
         ax.scatter(t[peaks], signal[peaks], color="#E74C3C", s=18, zorder=5)
     ax.set_title(title, fontsize=8, color=BLUE_HDR, fontweight="bold", pad=3)
     ax.set_ylabel("mV", fontsize=7, color="#555")
-    ax.set_xlabel("Temps (s)", fontsize=7, color="#555")
+    ax.set_xlabel("Temps (mm:ss)", fontsize=7, color="#555")
     ax.tick_params(labelsize=6)
-    ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%.1f"))
+    ax.xaxis.set_major_formatter(_mmss_formatter)
     for sp in ax.spines.values():
         sp.set_edgecolor("#CCC")
 
@@ -263,11 +270,11 @@ def _make_slice_fig(df, ecg_f, peaks, stats, t0, t1, idx, bpm_thr):
         ax3.set_title("Fréquence cardiaque", fontsize=8, color=tc,
                       fontweight="bold", pad=3)
         ax3.set_ylabel("bpm", fontsize=7, color="#555")
-        ax3.set_xlabel("Temps (s)", fontsize=7, color="#555")
+        ax3.set_xlabel("Temps (mm:ss)", fontsize=7, color="#555")
         ax3.set_xlim(t0, t1)
         ax3.set_ylim(max(0, hv.min()-5), hv.max()+10)
         ax3.tick_params(labelsize=6)
-        ax3.xaxis.set_major_formatter(plt.FormatStrFormatter("%.1f"))
+        ax3.xaxis.set_major_formatter(_mmss_formatter)
     else:
         ax3.text(0.5, 0.5, "Données HR insuffisantes",
                  ha="center", va="center", transform=ax3.transAxes,
@@ -309,8 +316,9 @@ def _make_full_bpm_fig(df, bpm_thr=None):
     ax.set_title("Fréquence cardiaque — enregistrement complet",
                  fontsize=10, color=BLUE_HDR, fontweight="bold")
     ax.set_ylabel("bpm", fontsize=8, color="#555")
-    ax.set_xlabel("Temps (s)", fontsize=8, color="#555")
+    ax.set_xlabel("Temps (mm:ss)", fontsize=8, color="#555")
     ax.set_xlim(ht[0], ht[-1])
+    ax.xaxis.set_major_formatter(_mmss_formatter)
     ax.set_ylim(max(0, hv.min()-5), hv.max()+10)
     ax.tick_params(labelsize=7)
     buf = BytesIO()
