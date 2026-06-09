@@ -1449,6 +1449,16 @@ class MainWindow(QMainWindow):
             self.lbl_pdf.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
             pdf_form.addRow(self.lbl_pdf)
 
+            btn_open_csv = QPushButton("📂  Ouvrir un CSV existant → PDF")
+            btn_open_csv.setMinimumHeight(34)
+            btn_open_csv.setStyleSheet(
+                f"QPushButton {{ background:{C_PURPLE}; color:{C_WHITE}; "
+                f"border:1px solid {C_GRAY}; border-radius:7px; "
+                f"font-size:11px; font-weight:600; padding:4px 12px; }}"
+                f"QPushButton:hover {{ background:#5d2570; }}")
+            btn_open_csv.clicked.connect(self._on_open_csv)
+            pdf_form.addRow(btn_open_csv)
+
             root.addWidget(pdf_box)
         else:
             self.chk_pdf    = None
@@ -1596,6 +1606,17 @@ class MainWindow(QMainWindow):
         self._pdf_worker.finished.connect(self._on_pdf_done)
         self._pdf_worker.error.connect(self._on_pdf_error)
         self._pdf_worker.start()
+
+    def _on_open_csv(self):
+        """Ouvre un fichier CSV existant et lance l'export PDF."""
+        from PyQt5.QtWidgets import QFileDialog
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        csv_path, _ = QFileDialog.getOpenFileName(
+            self, "Choisir un fichier CSV", data_dir,
+            "Fichiers CSV (*.csv);;Tous les fichiers (*)")
+        if not csv_path:
+            return
+        self._on_recording_done(csv_path)
 
     def _on_pdf_done(self, pdf_path):
         name = os.path.basename(pdf_path)
