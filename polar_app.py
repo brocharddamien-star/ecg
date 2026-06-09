@@ -389,10 +389,17 @@ def generate_pdf(csv_path: str, pdf_path: str,
     stats = _compute_stats(df_ecg, peaks, fs)
     prog(f"{len(peaks)} pics R, FC moy={stats['mean_hr']} bpm")
 
-    prog(f"Génération des figures ({window_s:.0f} s / tranche)…")
     t_data_min = float(df_ecg["t_s"].iloc[0])
     t_data_max = float(df_ecg["t_s"].iloc[-1])
     ranges = time_ranges if time_ranges else [(t_data_min, t_data_max)]
+
+    # Calcul du nombre total de tranches pour l'avancement
+    n_total = sum(
+        max(1, int(np.ceil((min(float(e), t_data_max) - max(float(s), t_data_min)) / window_s)))
+        for s, e in ranges
+    )
+    prog(f"Génération des figures — 0 / {n_total} tranche(s)…")
+
     figs, idx = [], 1
     for r_start, r_end in ranges:
         r_start = max(float(r_start), t_data_min)
@@ -403,6 +410,7 @@ def generate_pdf(csv_path: str, pdf_path: str,
             buf = _make_slice_fig(df_ecg, ecg_f, peaks, stats,
                                   ts, te, idx, bpm_threshold)
             figs.append((buf, idx))
+            prog(f"Génération des figures — {idx} / {n_total} tranche(s)…")
             ts += window_s; idx += 1
     n_parts = len(ranges)
     prog(f"{len(figs)} tranche(s) générée(s)"
