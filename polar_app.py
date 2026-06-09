@@ -609,12 +609,12 @@ class EcgSelectorDialog(QDialog):
 
     def __init__(self, csv_path: str, parent=None):
         super().__init__(parent)
-        self.csv_path     = csv_path
-        self._selected    = []   # list of (t_start, t_end)
-        self._region_item = None
-        self._added_vis   = []   # LinearRegionItems figées (vert)
-        self._total_s     = 0.0
-        self._blocking    = False
+        self.csv_path   = csv_path
+        self._selected  = []   # list of (t_start, t_end)
+        self._added_vis = []   # LinearRegionItems figées (vert)
+        self._total_s   = 0.0
+        self._drag_start = None   # x position où le clic a débuté
+        self._drag_item  = None   # LinearRegionItem temporaire (en cours de tracé)
         self._setup_ui()
         self._load_and_plot()
 
@@ -623,11 +623,11 @@ class EcgSelectorDialog(QDialog):
     def _setup_ui(self):
         self.setWindowTitle("Sélection ECG — parties à inclure dans le PDF")
         self.setModal(True)
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(900, 600)
         self.setStyleSheet(f"background:{C_NAVY};")
 
         root = QVBoxLayout(self)
-        root.setSpacing(10)
+        root.setSpacing(8)
         root.setContentsMargins(16, 12, 16, 12)
 
         lbl_title = QLabel("Sélectionnez les parties à inclure dans le PDF")
@@ -636,21 +636,23 @@ class EcgSelectorDialog(QDialog):
             f"color:{C_WHITE}; font-size:14px; font-weight:700;")
         root.addWidget(lbl_title)
 
-        lbl_hint = QLabel(
-            "Déplacez la région rose sur le graphe  ·  "
-            "affinez avec les champs ci-dessous  ·  cliquez « + Ajouter »")
+        lbl_hint = QLabel("Cliquez et glissez sur le graphe pour sélectionner une partie")
         lbl_hint.setAlignment(Qt.AlignCenter)
         lbl_hint.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
         root.addWidget(lbl_hint)
 
         # Graphe ECG
         self.plot = pg.PlotWidget(background=C_PURPLE)
-        self.plot.setMinimumHeight(220)
+        self.plot.setMinimumHeight(240)
         self.plot.setLabel("bottom", "Temps (mm:ss)")
         self.plot.setLabel("left", "Amplitude (mV)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.setMenuEnabled(False)
+        vb = self.plot.getViewBox()
+        vb.mousePressEvent   = self._vb_press
+        vb.mouseMoveEvent    = self._vb_move
+        vb.mouseReleaseEvent = self._vb_release
         root.addWidget(self.plot)
 
         # Graphe BPM
@@ -667,40 +669,6 @@ class EcgSelectorDialog(QDialog):
         self.bpm_plot.setMenuEnabled(False)
         root.addWidget(self.bpm_plot)
 
-        # Contrôles de sélection
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-
-        def _spin(label_text):
-            lbl = QLabel(label_text)
-            lbl.setStyleSheet(f"color:{C_WHITE}; font-size:11px;")
-            spin = QDoubleSpinBox()
-            spin.setRange(0, 99999)
-            spin.setSuffix(" s")
-            spin.setDecimals(1)
-            spin.setMinimumWidth(96)
-            spin.setStyleSheet(
-                f"background:{C_PURPLE}; color:{C_WHITE}; "
-                f"border:1px solid {C_GRAY}; border-radius:4px; padding:2px;")
-            return lbl, spin
-
-        lbl_s, self.spin_start = _spin("Début :")
-        lbl_e, self.spin_end   = _spin("Fin :")
-        for w in (lbl_s, self.spin_start, lbl_e, self.spin_end):
-            ctrl.addWidget(w)
-
-        btn_add = QPushButton("+ Ajouter")
-        btn_add.setMinimumHeight(32)
-        btn_add.setStyleSheet(
-            f"QPushButton {{ background:{C_PINK}; color:{C_WHITE}; "
-            f"border-radius:6px; padding:4px 14px; "
-            f"font-weight:700; font-size:11px; }}"
-            f"QPushButton:hover {{ background:#d9269f; }}")
-        btn_add.clicked.connect(self._add_selection)
-        ctrl.addWidget(btn_add)
-        ctrl.addStretch()
-        root.addLayout(ctrl)
-
         # Liste des sélections
         sel_hdr = QLabel("Parties sélectionnées :")
         sel_hdr.setStyleSheet(
@@ -714,7 +682,7 @@ class EcgSelectorDialog(QDialog):
         self._sel_lay.setSpacing(4)
 
         self._lbl_empty = QLabel(
-            "Aucune sélection — ajoutez au moins une partie")
+            "Aucune sélection — tracez au moins une partie sur le graphe")
         self._lbl_empty.setAlignment(Qt.AlignCenter)
         self._lbl_empty.setStyleSheet(
             f"color:{C_GRAY}; font-size:10px; font-style:italic;")
@@ -724,7 +692,7 @@ class EcgSelectorDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidget(self._sel_container)
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(115)
+        scroll.setMaximumHeight(110)
         scroll.setStyleSheet(
             f"QScrollArea {{ background:{C_PURPLE}; "
             f"border:1px solid {C_GRAY}; border-radius:6px; }}")
@@ -778,27 +746,6 @@ class EcgSelectorDialog(QDialog):
             self.plot.getAxis("bottom").tickStrings = _mmss_tick
             self.bpm_plot.getAxis("bottom").tickStrings = _mmss_tick
 
-            # Région initiale : 20 % de l'enregistrement centré
-            width = min(15.0, max(5.0, self._total_s * 0.2))
-            mid   = self._total_s / 2
-            r0, r1 = mid - width / 2, mid + width / 2
-
-            self._region_item = pg.LinearRegionItem(
-                values=[r0, r1],
-                brush=pg.mkBrush(198, 22, 141, 50),
-                pen=pg.mkPen(C_PINK, width=2),
-            )
-            self._region_item.setZValue(100)   # toujours au premier plan
-            self._region_item.sigRegionChanged.connect(self._on_region_drag)
-            self.plot.addItem(self._region_item)
-
-            self.spin_start.setMaximum(self._total_s)
-            self.spin_end.setMaximum(self._total_s)
-            self.spin_start.setValue(round(r0, 1))
-            self.spin_end.setValue(round(r1, 1))
-            self.spin_start.valueChanged.connect(self._on_spin_change)
-            self.spin_end.valueChanged.connect(self._on_spin_change)
-
             # Tracé BPM
             hr_df = df[df["hr"].notna()].copy()
             if len(hr_df) > 1:
@@ -813,33 +760,56 @@ class EcgSelectorDialog(QDialog):
         except Exception as e:
             logging.error(f"[selector] {e}")
 
-    # ── Synchronisation région ↔ spinboxes ────────────────────────────────────
+    # ── Sélection par clic-glisser ────────────────────────────────────────────
 
-    def _on_region_drag(self):
-        if self._blocking:
-            return
-        r0, r1 = self._region_item.getRegion()
-        self._blocking = True
-        self.spin_start.setValue(round(r0, 1))
-        self.spin_end.setValue(round(r1, 1))
-        self._blocking = False
+    def _vb_x(self, event):
+        """Convertit la position souris en secondes dans le ViewBox."""
+        vb = self.plot.getViewBox()
+        pos = vb.mapSceneToView(event.scenePos())
+        return max(0.0, min(float(pos.x()), self._total_s))
 
-    def _on_spin_change(self):
-        if self._blocking or self._region_item is None:
-            return
-        s, e = self.spin_start.value(), self.spin_end.value()
-        if e > s:
-            self._blocking = True
-            self._region_item.setRegion([s, e])
-            self._blocking = False
+    def _vb_press(self, event):
+        from PyQt5.QtCore import Qt as _Qt
+        if event.button() == _Qt.LeftButton:
+            self._drag_start = self._vb_x(event)
+            self._drag_item = pg.LinearRegionItem(
+                values=[self._drag_start, self._drag_start],
+                movable=False,
+                brush=pg.mkBrush(198, 22, 141, 60),
+                pen=pg.mkPen(C_PINK, width=2),
+            )
+            self._drag_item.setZValue(50)
+            self.plot.addItem(self._drag_item)
+            event.accept()
+        else:
+            pg.ViewBox.mousePressEvent(self.plot.getViewBox(), event)
+
+    def _vb_move(self, event):
+        if self._drag_start is not None and self._drag_item is not None:
+            x = self._vb_x(event)
+            s = min(self._drag_start, x)
+            e = max(self._drag_start, x)
+            self._drag_item.setRegion([s, e])
+            event.accept()
+
+    def _vb_release(self, event):
+        from PyQt5.QtCore import Qt as _Qt
+        if event.button() == _Qt.LeftButton and self._drag_start is not None:
+            x = self._vb_x(event)
+            s = round(min(self._drag_start, x), 1)
+            e = round(max(self._drag_start, x), 1)
+            self.plot.removeItem(self._drag_item)
+            self._drag_item  = None
+            self._drag_start = None
+            if e - s >= 0.5:
+                self._add_selection(s, e)
+            event.accept()
+        else:
+            pg.ViewBox.mouseReleaseEvent(self.plot.getViewBox(), event)
 
     # ── Ajout / suppression de sélections ────────────────────────────────────
 
-    def _add_selection(self):
-        s = round(self.spin_start.value(), 1)
-        e = round(self.spin_end.value(), 1)
-        if e <= s:
-            return
+    def _add_selection(self, s, e):
         rng = (s, e)
         self._selected.append(rng)
 
@@ -848,28 +818,26 @@ class EcgSelectorDialog(QDialog):
             brush=pg.mkBrush(76, 175, 80, 45),
             pen=pg.mkPen(C_GREEN, width=1.5),
         )
-        vis.setZValue(1)   # derrière la région rose (Z=100)
+        vis.setZValue(1)
         self.plot.addItem(vis)
         self._added_vis.append(vis)
 
         if self._lbl_empty.isVisible():
             self._lbl_empty.hide()
 
+        def fmt(v):
+            return f"{int(v // 60):02d}:{int(v % 60):02d}"
+
         row = QFrame()
         row.setStyleSheet(f"background:{C_NAVY}; border-radius:4px;")
         rl = QHBoxLayout(row)
         rl.setContentsMargins(8, 2, 8, 2)
-
-        def fmt(v):
-            return f"{int(v // 60):02d}:{int(v % 60):02d}"
-
         lbl = QLabel(
             f"Partie {len(self._selected)} :  "
             f"{fmt(s)} → {fmt(e)}  ({e - s:.0f} s)")
         lbl.setStyleSheet(f"color:{C_WHITE}; font-size:10px;")
         rl.addWidget(lbl)
         rl.addStretch()
-
         btn_del = QPushButton("✕")
         btn_del.setFixedSize(22, 22)
         btn_del.setStyleSheet(
@@ -878,20 +846,8 @@ class EcgSelectorDialog(QDialog):
         btn_del.clicked.connect(
             lambda _, v=vis, w=row, r=rng: self._remove_selection(v, w, r))
         rl.addWidget(btn_del)
-
         self._sel_lay.insertWidget(self._sel_lay.count() - 1, row)
         self.btn_generate.setEnabled(True)
-
-        # Avance la région rose à la prochaine fenêtre suggérée
-        width   = max(e - s, 1.0)
-        next_s  = e
-        next_e  = min(e + width, self._total_s)
-        if next_e > next_s:
-            self._blocking = True
-            self._region_item.setRegion([next_s, next_e])
-            self.spin_start.setValue(round(next_s, 1))
-            self.spin_end.setValue(round(next_e, 1))
-            self._blocking = False
 
     def _remove_selection(self, vis_item, row_widget, rng):
         if rng in self._selected:
