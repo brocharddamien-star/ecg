@@ -643,20 +643,14 @@ class EcgSelectorDialog(QDialog):
         lbl_hint.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
         root.addWidget(lbl_hint)
 
-        lbl_hint2 = QLabel("Molette : zoom  ·  Clic droit + glisser : déplacer la vue")
-        lbl_hint2.setAlignment(Qt.AlignCenter)
-        lbl_hint2.setStyleSheet(f"color:{C_LGRAY}; font-size:9px;")
-        root.addWidget(lbl_hint2)
-
         # Graphe ECG
         self.plot = pg.PlotWidget(background=C_PURPLE)
         self.plot.setMinimumHeight(220)
         self.plot.setLabel("bottom", "Temps (mm:ss)")
         self.plot.setLabel("left", "Amplitude (mV)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.setMouseEnabled(x=True, y=True)
-        self.plot.getViewBox().setMouseMode(pg.ViewBox.RectMode)
-        self.plot.getViewBox().setMouseMode(pg.ViewBox.PanMode)
+        self.plot.setMouseEnabled(x=False, y=False)
+        self.plot.setMenuEnabled(False)
         root.addWidget(self.plot)
 
         # Graphe BPM
@@ -669,7 +663,8 @@ class EcgSelectorDialog(QDialog):
         self.bpm_plot.setLabel("bottom", "Temps (mm:ss)")
         self.bpm_plot.setLabel("left", "bpm")
         self.bpm_plot.showGrid(x=True, y=True, alpha=0.25)
-        self.bpm_plot.setMouseEnabled(x=True, y=True)
+        self.bpm_plot.setMouseEnabled(x=False, y=False)
+        self.bpm_plot.setMenuEnabled(False)
         root.addWidget(self.bpm_plot)
 
         # Contrôles de sélection
