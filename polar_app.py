@@ -281,6 +281,45 @@ def _make_slice_fig(df, ecg_f, peaks, stats, t0, t1, idx, bpm_thr):
     return buf
 
 
+def _make_full_bpm_fig(df, bpm_thr=None):
+    """Graphe BPM sur la totalité de l'enregistrement."""
+    hr_df = df[df["hr"].notna()][["t_s", "hr"]]
+    if len(hr_df) < 2:
+        return None
+    hv = hr_df["hr"].values
+    ht = hr_df["t_s"].values
+    fig, ax = plt.subplots(figsize=(16, 3))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#F5FAFF")
+    ax.grid(True, color="#D0E8F8", linewidth=0.6)
+    if bpm_thr is not None:
+        for i in range(len(ht) - 1):
+            c = "#C0392B" if max(hv[i:i+2]) > bpm_thr else "#2980B9"
+            ax.plot(ht[i:i+2], hv[i:i+2], color=c, linewidth=1.4)
+        above = hv > bpm_thr
+        ax.scatter(ht[above],  hv[above],  color="#C0392B", s=18, zorder=5)
+        ax.scatter(ht[~above], hv[~above], color=TEAL_ACC,  s=10, zorder=5)
+        ax.axhline(bpm_thr, color="#C0392B", linewidth=1.2, linestyle="--",
+                   label=f"Seuil {bpm_thr:.0f} bpm")
+        ax.axhspan(bpm_thr, max(hv.max()+5, bpm_thr+10), color="#C0392B", alpha=0.08)
+        ax.legend(fontsize=7, loc="upper right")
+    else:
+        ax.plot(ht, hv, color="#2980B9", linewidth=1.4,
+                marker="o", markersize=3, markerfacecolor=TEAL_ACC)
+    ax.set_title("Fréquence cardiaque — enregistrement complet",
+                 fontsize=10, color=BLUE_HDR, fontweight="bold")
+    ax.set_ylabel("bpm", fontsize=8, color="#555")
+    ax.set_xlabel("Temps (s)", fontsize=8, color="#555")
+    ax.set_xlim(ht[0], ht[-1])
+    ax.set_ylim(max(0, hv.min()-5), hv.max()+10)
+    ax.tick_params(labelsize=7)
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
 def _make_rr_histogram(rr_ms):
     if len(rr_ms) < 3:
         return None
@@ -361,8 +400,9 @@ def generate_pdf(csv_path: str, pdf_path: str,
     prog(f"{len(figs)} tranche(s) générée(s)"
          + (f" sur {n_parts} partie(s)" if time_ranges else ""))
 
-    rr_ms  = np.diff(peaks) / fs * 1000 if len(peaks) > 1 else np.array([])
-    rr_buf = _make_rr_histogram(rr_ms)
+    rr_ms   = np.diff(peaks) / fs * 1000 if len(peaks) > 1 else np.array([])
+    rr_buf  = _make_rr_histogram(rr_ms)
+    bpm_buf = _make_full_bpm_fig(df_ecg, bpm_threshold)
 
     prog("Construction du PDF…")
     doc = SimpleDocTemplate(
@@ -443,6 +483,16 @@ def generate_pdf(csv_path: str, pdf_path: str,
     ]))
     story.append(tbl)
     story.append(Spacer(1, 8))
+
+    # Graphe BPM complet
+    if bpm_buf:
+        story.append(Paragraph("Fréquence cardiaque — enregistrement complet", sec_sty))
+        bpm_cap = "Courbe FC sur la totalité de l'enregistrement"
+        if bpm_threshold:
+            bpm_cap += f"  |  <font color='#C0392B'><b>Seuil : {bpm_threshold:.0f} bpm</b></font>"
+        story.append(Paragraph(bpm_cap, cap_sty))
+        story.append(RLImage(bpm_buf, width=W, height=W * 3/16))
+        story.append(Spacer(1, 8))
 
     # Tracés ECG
     if time_ranges:
@@ -587,11 +637,23 @@ class EcgSelectorDialog(QDialog):
 
         # Graphe ECG
         self.plot = pg.PlotWidget(background=C_PURPLE)
-        self.plot.setMinimumHeight(280)
+        self.plot.setMinimumHeight(220)
         self.plot.setLabel("bottom", "Temps (s)")
         self.plot.setLabel("left", "Amplitude (mV)")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
         root.addWidget(self.plot)
+
+        # Graphe BPM
+        lbl_bpm = QLabel("Fréquence cardiaque (enregistrement complet)")
+        lbl_bpm.setStyleSheet(f"color:{C_LPINK}; font-size:10px; font-weight:600;")
+        root.addWidget(lbl_bpm)
+        self.bpm_plot = pg.PlotWidget(background=C_NAVY)
+        self.bpm_plot.setMinimumHeight(110)
+        self.bpm_plot.setMaximumHeight(140)
+        self.bpm_plot.setLabel("bottom", "Temps (s)")
+        self.bpm_plot.setLabel("left", "bpm")
+        self.bpm_plot.showGrid(x=True, y=True, alpha=0.25)
+        root.addWidget(self.bpm_plot)
 
         # Contrôles de sélection
         ctrl = QHBoxLayout()
@@ -718,6 +780,17 @@ class EcgSelectorDialog(QDialog):
             self.spin_end.setValue(round(r1, 1))
             self.spin_start.valueChanged.connect(self._on_spin_change)
             self.spin_end.valueChanged.connect(self._on_spin_change)
+
+            # Tracé BPM
+            hr_df = df[df["hr"].notna()].copy()
+            if len(hr_df) > 1:
+                ht = hr_df["t_s"].values
+                hv = hr_df["hr"].values
+                self.bpm_plot.plot(ht, hv,
+                                   pen=pg.mkPen("#2980B9", width=1.5),
+                                   symbol="o", symbolSize=4,
+                                   symbolBrush=pg.mkBrush(TEAL_ACC))
+                self.bpm_plot.setXRange(0, self._total_s, padding=0.02)
 
         except Exception as e:
             logging.error(f"[selector] {e}")
