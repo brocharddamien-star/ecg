@@ -18,7 +18,7 @@ try:
         QApplication, QMainWindow, QWidget,
         QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
         QDoubleSpinBox, QCheckBox, QFormLayout, QGroupBox,
-        QDialog, QScrollArea,
+        QDialog, QScrollArea, QProgressBar,
     )
     from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal, QThread
     from PyQt5.QtGui import QFont
@@ -217,12 +217,9 @@ def _make_slice_fig(df, ecg_f, peaks, stats, t0, t1, idx, bpm_thr):
     t   = df["t_s"].values
     raw = df["ecg"].values
     mask    = (t >= t0) & (t < t1)
-    t_win   = t[mask]; raw_win = raw[mask]; flt_win = ecg_f[mask]
-    pk_g    = peaks[(t[peaks] >= t0) & (t[peaks] < t1)]
-    offset  = np.where(mask)[0][0] if mask.any() else 0
-    pk_l    = pk_g - offset
+    t_win   = t[mask]; raw_win = raw[mask]
 
-    fig, axes = plt.subplots(3, 1, figsize=(16, 7),
+    fig, axes = plt.subplots(2, 1, figsize=(16, 5),
                               gridspec_kw={"hspace": 0.60})
     fig.patch.set_facecolor("white")
 
@@ -241,13 +238,10 @@ def _make_slice_fig(df, ecg_f, peaks, stats, t0, t1, idx, bpm_thr):
 
     _ecg_grid(axes[0], t_win, raw_win, title="Signal brut")
     axes[0].set_xlim(t0, t1)
-    _ecg_grid(axes[1], t_win, flt_win, peaks=pk_l,
-              title=f"Signal filtré · {len(pk_l)} pic(s) R")
-    axes[1].set_xlim(t0, t1)
 
     hr_df = df[df["hr"].notna()][["t_s","hr"]]
     hr_w  = hr_df[(hr_df["t_s"] >= t0) & (hr_df["t_s"] < t1)]
-    ax3   = axes[2]
+    ax3   = axes[1]
     if len(hr_w) > 1:
         hv = hr_w["hr"].values; ht = hr_w["t_s"].values
         ax3.set_facecolor("#FFF5F5" if alert else "#F5FAFF")
@@ -356,15 +350,18 @@ def generate_pdf(csv_path: str, pdf_path: str,
                  bpm_threshold: float = None,
                  window_s: float = 15.0,
                  time_ranges=None,
-                 progress_cb=None) -> str:
+                 progress_cb=None,
+                 progress_pct_cb=None) -> str:
     """Génère le PDF à partir du CSV. Retourne le chemin du PDF ou lève une exception."""
 
-    def prog(msg):
+    def prog(msg, pct=None):
         logging.info(f"[pdf] {msg}")
         if progress_cb:
             progress_cb(msg)
+        if pct is not None and progress_pct_cb:
+            progress_pct_cb(pct)
 
-    prog(f"Chargement : {os.path.basename(csv_path)}")
+    prog(f"Chargement : {os.path.basename(csv_path)}", pct=2)
     df = pd.read_csv(csv_path)
     t0 = df["time"].iloc[0]
     df["t_s"] = (df["time"] - t0) / 1e9
@@ -381,19 +378,27 @@ def generate_pdf(csv_path: str, pdf_path: str,
     dt  = np.diff(t)
     fs  = 1.0 / np.median(dt)
 
-    prog(f"{len(df_ecg)} échantillons, fs≈{fs:.1f} Hz, durée={t[-1]:.1f} s")
+    prog(f"{len(df_ecg)} échantillons, fs≈{fs:.1f} Hz, durée={t[-1]:.1f} s", pct=8)
 
-    prog("Filtrage et détection des pics R…")
+    prog("Filtrage et détection des pics R…", pct=10)
     ecg_f = _bandpass_filter(raw, fs)
     peaks, _ = _detect_r_peaks(ecg_f, fs)
     stats = _compute_stats(df_ecg, peaks, fs)
-    prog(f"{len(peaks)} pics R, FC moy={stats['mean_hr']} bpm")
+    prog(f"{len(peaks)} pics R, FC moy={stats['mean_hr']} bpm", pct=18)
 
-    prog(f"Génération des figures ({window_s:.0f} s / tranche)…")
     t_data_min = float(df_ecg["t_s"].iloc[0])
     t_data_max = float(df_ecg["t_s"].iloc[-1])
     ranges = time_ranges if time_ranges else [(t_data_min, t_data_max)]
-    figs, idx = [], 1
+
+    # Calcul du nombre total de tranches pour la progression
+    import math as _math
+    total_slices = sum(
+        max(1, _math.ceil((min(float(r_end), t_data_max) - max(float(r_start), t_data_min)) / window_s))
+        for r_start, r_end in ranges
+    )
+
+    prog(f"Génération des figures ({window_s:.0f} s / tranche)…", pct=20)
+    figs, idx, done = [], 1, 0
     for r_start, r_end in ranges:
         r_start = max(float(r_start), t_data_min)
         r_end   = min(float(r_end),   t_data_max)
@@ -403,10 +408,13 @@ def generate_pdf(csv_path: str, pdf_path: str,
             buf = _make_slice_fig(df_ecg, ecg_f, peaks, stats,
                                   ts, te, idx, bpm_threshold)
             figs.append((buf, idx))
+            done += 1
+            pct_fig = 20 + int(done / max(total_slices, 1) * 70)
+            prog(f"Tranche {done}/{total_slices}…", pct=pct_fig)
             ts += window_s; idx += 1
     n_parts = len(ranges)
     prog(f"{len(figs)} tranche(s) générée(s)"
-         + (f" sur {n_parts} partie(s)" if time_ranges else ""))
+         + (f" sur {n_parts} partie(s)" if time_ranges else ""), pct=90)
 
     rr_ms   = np.diff(peaks) / fs * 1000 if len(peaks) > 1 else np.array([])
     rr_buf  = _make_rr_histogram(rr_ms)
@@ -513,12 +521,12 @@ def generate_pdf(csv_path: str, pdf_path: str,
         story.append(Paragraph(parts_desc, cap_sty))
     else:
         story.append(Paragraph(f"Tracé ECG — tranches de {window_s:.0f} secondes", sec_sty))
-    cap = "De haut en bas : signal brut · signal filtré avec pics R · fréquence cardiaque"
+    cap = "De haut en bas : signal brut · fréquence cardiaque"
     if bpm_threshold:
         cap += f"  |  <font color='#C0392B'><b>Seuil FC : {bpm_threshold:.0f} bpm</b></font>"
     story.append(Paragraph(cap, cap_sty))
     for buf, _ in figs:
-        story.append(RLImage(buf, width=W, height=W * 7/16))
+        story.append(RLImage(buf, width=W, height=W * 5/16))
         story.append(Spacer(1, 6))
 
     # Histogramme RR
@@ -543,8 +551,9 @@ def generate_pdf(csv_path: str, pdf_path: str,
         "Toute interprétation clinique doit être effectuée par un professionnel de santé qualifié.",
         note_sty))
 
+    prog("Assemblage du PDF…", pct=92)
     doc.build(story)
-    prog(f"PDF écrit : {os.path.basename(pdf_path)}")
+    prog(f"PDF écrit : {os.path.basename(pdf_path)}", pct=100)
     return pdf_path
 
 
@@ -869,9 +878,10 @@ class EcgSelectorDialog(QDialog):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class PdfWorker(QThread):
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(str)   # chemin PDF
-    error    = pyqtSignal(str)
+    progress     = pyqtSignal(str)
+    progress_pct = pyqtSignal(int)
+    finished     = pyqtSignal(str)   # chemin PDF
+    error        = pyqtSignal(str)
 
     def __init__(self, csv_path, bpm_threshold=None, window_s=15.0,
                  time_ranges=None):
@@ -890,6 +900,7 @@ class PdfWorker(QThread):
                 window_s=self.window_s,
                 time_ranges=self.time_ranges,
                 progress_cb=lambda m: self.progress.emit(m),
+                progress_pct_cb=lambda p: self.progress_pct.emit(p),
             )
             self.finished.emit(pdf_path)
         except Exception as e:
@@ -1423,6 +1434,18 @@ class MainWindow(QMainWindow):
             self.lbl_pdf.setStyleSheet(f"color:{C_LGRAY}; font-size:10px;")
             pdf_form.addRow(self.lbl_pdf)
 
+            self.pdf_progress = QProgressBar()
+            self.pdf_progress.setRange(0, 100)
+            self.pdf_progress.setValue(0)
+            self.pdf_progress.setTextVisible(True)
+            self.pdf_progress.setFixedHeight(14)
+            self.pdf_progress.setStyleSheet(
+                f"QProgressBar {{ border:1px solid {C_GRAY}; border-radius:6px; "
+                f"background:{C_LGRAY}; text-align:center; font-size:9px; color:{C_WHITE}; }}"
+                f"QProgressBar::chunk {{ background:{C_PINK}; border-radius:5px; }}")
+            self.pdf_progress.hide()
+            pdf_form.addRow(self.pdf_progress)
+
             btn_open_csv = QPushButton("📂  Ouvrir un CSV existant → PDF")
             btn_open_csv.setMinimumHeight(34)
             btn_open_csv.setStyleSheet(
@@ -1573,10 +1596,13 @@ class MainWindow(QMainWindow):
 
         self.lbl_pdf.setText("⏳ Génération du PDF en cours…")
         self.lbl_pdf.setStyleSheet(f"color:{C_ORANGE}; font-size:10px;")
+        self.pdf_progress.setValue(0)
+        self.pdf_progress.show()
 
         self._pdf_worker = PdfWorker(csv_path, bpm_thr, window_s, time_ranges)
         self._pdf_worker.progress.connect(
             lambda m: self.lbl_pdf.setText(f"⏳ {m}"))
+        self._pdf_worker.progress_pct.connect(self.pdf_progress.setValue)
         self._pdf_worker.finished.connect(self._on_pdf_done)
         self._pdf_worker.error.connect(self._on_pdf_error)
         self._pdf_worker.start()
@@ -1596,11 +1622,13 @@ class MainWindow(QMainWindow):
         name = os.path.basename(pdf_path)
         self.lbl_pdf.setText(f"✓ PDF : {name}")
         self.lbl_pdf.setStyleSheet(f"color:{C_GREEN}; font-size:10px;")
+        self.pdf_progress.hide()
         logging.info(f"[pdf] Rapport généré : {pdf_path}")
 
     def _on_pdf_error(self, msg):
         self.lbl_pdf.setText(f"✗ Erreur PDF : {msg}")
         self.lbl_pdf.setStyleSheet(f"color:{C_RED}; font-size:10px;")
+        self.pdf_progress.hide()
         logging.error(f"[pdf] Erreur : {msg}")
 
     def closeEvent(self, event):

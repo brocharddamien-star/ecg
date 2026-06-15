@@ -230,15 +230,11 @@ def make_ecg_figure_slice(df: pd.DataFrame, ecg_filtered: np.ndarray,
     mask      = (t >= t_start) & (t < t_end)
     t_win     = t[mask]
     raw_win   = raw[mask]
-    flt_win   = ecg_filtered[mask]
-    pk_global = peaks[(t[peaks] >= t_start) & (t[peaks] < t_end)]
-    offset    = np.where(mask)[0][0] if mask.any() else 0
-    pk_local  = pk_global - offset
 
-    # 5 graphes : brut / filtré / BPM-RR calculé / BPM brut CSV / RR→BPM brut CSV
-    fig, axes = plt.subplots(5, 1, figsize=(16, 13),
+    # 4 graphes : brut / BPM-RR calculé / BPM brut CSV / RR→BPM brut CSV
+    fig, axes = plt.subplots(4, 1, figsize=(16, 11),
                               gridspec_kw={"hspace": 0.70,
-                                           "height_ratios": [2, 2, 1.2, 1.0, 1.0]})
+                                           "height_ratios": [2, 1.2, 1.0, 1.0]})
     fig.patch.set_facecolor("white")
 
     # ── Alertes ───────────────────────────────────────────────────────────
@@ -273,15 +269,7 @@ def make_ecg_figure_slice(df: pd.DataFrame, ecg_filtered: np.ndarray,
     if mx_t is not None:
         axes[0].legend(fontsize=7, loc="upper right")
 
-    # ── axes[1] : Signal filtré ───────────────────────────────────────────
-    _ecg_grid(axes[1], t_win, flt_win, peaks=pk_local,
-              title=f"Signal filtré (0.5–40 Hz) · {len(pk_local)} pic(s) R",
-              hr_max_t_s=mx_t, hr_max_val=mx_v)
-    axes[1].set_xlim(t_start, t_end)
-    if mx_t is not None:
-        axes[1].legend(fontsize=7, loc="upper right")
-
-    # ── axes[2] : BPM instantané depuis intervalles RR (pics > 0.5 mV) ───
+    # ── axes[1] : BPM instantané depuis intervalles RR (pics > 0.5 mV) ───
     # Calcul : pour chaque pic R valide (amplitude > 0.5 mV),
     # BPM = 60 / RR_s avec le pic valide précédent.
     # Même axe X que les graphes ECG (t_start → t_end).
@@ -311,7 +299,7 @@ def make_ecg_figure_slice(df: pd.DataFrame, ecg_filtered: np.ndarray,
     rr_t_win   = rr_t_pts[win_mask]
     rr_bpm_win = rr_bpm_pts[win_mask]
 
-    ax_rr = axes[2]
+    ax_rr = axes[1]
     ax_rr.set_facecolor("#F5F8FF")
     ax_rr.grid(axis="y", color="#D0DCF0", linewidth=0.5, zorder=0)
     ax_rr.grid(axis="x", color="#E0E8F5", linewidth=0.3, zorder=0)
@@ -398,8 +386,8 @@ def make_ecg_figure_slice(df: pd.DataFrame, ecg_filtered: np.ndarray,
     for spine in ax_rr.spines.values():
         spine.set_edgecolor("#CCC")
 
-    # ── axes[3] : BPM brut depuis la colonne HR du CSV ──────────────────
-    ax_csv_hr = axes[3]
+    # ── axes[2] : BPM brut depuis la colonne HR du CSV ──────────────────
+    ax_csv_hr = axes[2]
     ax_csv_hr.set_facecolor("#FFFDF0")
     ax_csv_hr.grid(axis="y", color="#EDE8C0", linewidth=0.5, zorder=0)
     ax_csv_hr.grid(axis="x", color="#EDE8C0", linewidth=0.3, zorder=0)
@@ -461,8 +449,8 @@ def make_ecg_figure_slice(df: pd.DataFrame, ecg_filtered: np.ndarray,
     for spine in ax_csv_hr.spines.values():
         spine.set_edgecolor("#CCC")
 
-    # ── axes[4] : RR brut CSV converti en BPM  (colonne rr en ms) ────────
-    ax_csv_rr = axes[4]
+    # ── axes[3] : RR brut CSV converti en BPM  (colonne rr en ms) ────────
+    ax_csv_rr = axes[3]
     ax_csv_rr.set_facecolor("#F0FFF5")
     ax_csv_rr.grid(axis="y", color="#C0E8CC", linewidth=0.5, zorder=0)
     ax_csv_rr.grid(axis="x", color="#D5EFD8", linewidth=0.3, zorder=0)
@@ -867,8 +855,7 @@ def build_pdf(csv_path: str, output_path: str,
     # ── Tracés ECG par tranche ────────────────────────────────────────────
     story.append(Paragraph(
         f"Tracé ECG — tranches de {window_s:.0f} secondes", section_style))
-    caption_txt = ("De haut en bas : signal brut · signal filtré avec pics R · "
-                   "fréquence cardiaque  |  "
+    caption_txt = ("De haut en bas : signal brut · fréquence cardiaque  |  "
                    "<font color='#E67E22'><b>ligne orange = FC max</b></font>")
     if bpm_threshold is not None:
         caption_txt += (f"  |  <font color='#C0392B'><b>Seuil FC : "
