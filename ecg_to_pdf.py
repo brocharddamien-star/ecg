@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from datetime import datetime
 from io import BytesIO
-from scipy.signal import butter, filtfilt, find_peaks
+from scipy.signal import find_peaks
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -29,12 +29,8 @@ from reportlab.platypus import (
     Image as RLImage, HRFlowable, PageBreak
 )
 
-# ─── Medical color palette ──────────────────────────────────────────────────
-RED_ECG   = "#C0392B"
-GRID_MAJ  = "#F5CCCC"
-GRID_MIN  = "#FAE8E8"
-BLUE_HDR  = "#1A3A5C"
-TEAL_ACC  = "#1ABC9C"
+from theme import RED_ECG, GRID_MAJ, GRID_MIN, BLUE_HDR, TEAL_ACC
+from ecg_signal import bandpass_filter, adaptive_x_spacing
 
 
 # ─── Signal processing ───────────────────────────────────────────────────────
@@ -59,13 +55,6 @@ def load_csv(path: str) -> pd.DataFrame:
             "Vérifiez que l'enregistrement ECG était actif."
         )
     return df_ecg
-
-
-def bandpass_filter(signal: np.ndarray, fs: float,
-                    low: float = 0.5, high: float = 40.0) -> np.ndarray:
-    nyq = fs / 2.0
-    b, a = butter(4, [low / nyq, high / nyq], btype="band")
-    return filtfilt(b, a, signal)
 
 
 def detect_r_peaks(ecg_filtered: np.ndarray, fs: float):
@@ -148,25 +137,6 @@ def compute_stats(df: pd.DataFrame, peaks: np.ndarray, fs: float) -> dict:
 
 # ─── Matplotlib figures ───────────────────────────────────────────────────────
 
-def _adaptive_x_spacing(duration_s: float):
-    """Retourne (minor_s, major_s) en respectant le standard ECG médical.
-    Standard : petite case = 0.04 s, grande case = 0.20 s.
-    Pour les longues durées on garde un multiple entier de la grande case.
-    """
-    # Standard médical strict si la durée le permet (< 500 petites cases)
-    if duration_s / 0.04 <= 500:
-        return 0.04, 0.20
-    # Sinon : on scale en gardant le ratio 1:5 (petite:grande)
-    candidates = [
-        (0.20, 1.00), (0.40, 2.00), (1.00, 5.00),
-        (2.00, 10.0), (5.00, 25.0), (10.0, 50.0),
-    ]
-    for minor, major in candidates:
-        if duration_s / minor <= 500:
-            return minor, major
-    return 10.0, 50.0
-
-
 def _ecg_grid(ax, t, signal, peaks=None, title="ECG Signal",
               hr_max_t_s=None, hr_max_val=None):
     """Tracé ECG avec grille médicale standard.
@@ -176,7 +146,7 @@ def _ecg_grid(ax, t, signal, peaks=None, title="ECG Signal",
     ax.set_facecolor("#FFFAFA")
 
     duration = float(t[-1] - t[0]) if len(t) > 1 else 1.0
-    x_minor, x_major = _adaptive_x_spacing(duration)
+    x_minor, x_major = adaptive_x_spacing(duration)
 
     # ── Grille X (temps) ─────────────────────────────────────────────────
     ax.xaxis.set_minor_locator(plt.MultipleLocator(x_minor))
